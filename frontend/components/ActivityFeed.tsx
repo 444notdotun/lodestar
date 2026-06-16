@@ -20,16 +20,25 @@ function timeAgo(iso: string) {
 }
 
 export default function ActivityFeed() {
+  const INITIAL_VISIBLE = 10;
+  const LOAD_MORE_STEP = 10;
+
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
+  const [loading, setLoading] = useState(true);
 
   async function load() {
     try {
       const res = await fetch(`${API_URL}/demo/activity`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        throw new Error(`API returned status: ${res.status}`);
+      }
       const data = (await res.json()) as { activity: ActivityEntry[] };
       setActivity(data.activity);
-    } catch {
-      // ignore
+    } catch (error) {
+      console.error(JSON.stringify({ event: 'activity_feed_fetch_failed', error: String(error) }));
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -39,17 +48,24 @@ export default function ActivityFeed() {
     return () => clearInterval(interval);
   }, []);
 
+  const displayedActivities = activity.slice(0, visibleCount);
+  const hasMore = visibleCount < activity.length;
+
   return (
     <div className="card p-6 h-full flex flex-col">
       <h2 className="font-semibold text-sm mb-4">Live Registry Activity</h2>
 
-      {activity.length === 0 ? (
+      {loading && activity.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-secondary text-sm">
+          Loading...
+        </div>
+      ) : activity.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-secondary text-sm">
           No activity yet
         </div>
       ) : (
         <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-          {activity.map((entry, i) => (
+          {displayedActivities.map((entry, i) => (
             <div
               key={i}
               className="border border-border rounded-lg px-4 py-3 text-xs space-y-1 fade-in"
@@ -74,6 +90,18 @@ export default function ActivityFeed() {
               </div>
             </div>
           ))}
+          {hasMore && (
+            <div className="pt-2 pb-2 flex justify-center">
+              <button
+                onClick={() => setVisibleCount((prev) => prev + LOAD_MORE_STEP)}
+                disabled={loading}
+                className="btn-primary text-xs py-1.5 px-4"
+                aria-label="Show more activity entries"
+              >
+                Show More
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
