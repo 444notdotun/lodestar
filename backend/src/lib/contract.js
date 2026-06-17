@@ -13,6 +13,7 @@ const {
 import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
+import { recordReputationChange } from './reputationHistory.js';
 
 const TIMEOUT = 30;
 
@@ -186,6 +187,10 @@ export async function getServiceCount() {
 
 export async function updateReputation(id, positive) {
   try {
+    const current = await getService(id);
+    const oldReputation = current?.reputation ?? 0;
+    const delta = positive ? 1 : -1;
+
     const contract = getContract();
     const op = contract.call(
       'update_reputation',
@@ -194,7 +199,11 @@ export async function updateReputation(id, positive) {
     );
     await simulateAndSubmit(op);
     const updated = await getService(id);
-    return updated?.reputation ?? 0;
+    const newReputation = updated?.reputation ?? 0;
+
+    recordReputationChange(id, Date.now(), delta, newReputation);
+
+    return newReputation;
   } catch (err) {
     logger.error({ err, id, positive }, 'updateReputation failed');
     throw err;
