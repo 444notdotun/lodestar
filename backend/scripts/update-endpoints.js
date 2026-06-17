@@ -21,6 +21,7 @@ export async function update() {
     if (!needsUpdate.length) {
       logger.info('All endpoints already point to the deployed host — nothing to do');
       process.exit(0);
+      return;
     }
 
     for (const svc of needsUpdate) {
@@ -39,9 +40,11 @@ export async function update() {
 
     logger.info('All endpoints updated. New services registered with deployed URLs.');
     process.exit(0);
+    return;
   } catch (err) {
     logger.error({ err }, 'update-endpoints failed');
     process.exit(1);
+    return;
   }
 }
 
