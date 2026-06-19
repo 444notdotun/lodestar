@@ -27,29 +27,37 @@ export default function AgentsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initialLoad = useRef(true);
+  const requestSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++requestSeq.current;
     if (initialLoad.current) {
       setLoading(true);
     } else {
       setRefreshing(true);
     }
     try {
-      const [data, statsData] = await Promise.all([
+      const [agentsResult, statsResult] = await Promise.allSettled([
         fetchAgents(page, pageSize, sort),
         fetchAgentStats(),
       ]);
+      if (seq !== requestSeq.current) return;
+      if (agentsResult.status === 'rejected') throw agentsResult.reason;
+      const data = agentsResult.value;
       setAgents(data.agents);
       setTotal(data.total);
-      setStats(statsData);
+      if (statsResult.status === 'fulfilled') setStats(statsResult.value);
       setError(null);
       initialLoad.current = false;
     } catch (err: unknown) {
+      if (seq !== requestSeq.current) return;
       const msg = err instanceof Error ? err.message : 'Failed to load';
       setError(msg);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (seq === requestSeq.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [page, pageSize, sort]);
 

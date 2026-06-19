@@ -365,7 +365,7 @@ impl LodestarAgents {
 
         let mut result: Vec<AgentEntry> = vec![&env];
         let total = ids.len() as usize;
-        let start = (page * page_size) as usize;
+        let start = (page as usize).saturating_mul(page_size as usize);
         if start >= total {
             return result;
         }

@@ -49,8 +49,9 @@ const MOCK_STATS: AgentStats = {
 function setupMockFetchAgents(total: number) {
   (fetchAgents as jest.Mock).mockImplementation((page = 0, pageSize = PAGE_SIZE) => {
     const start = page * pageSize;
+    const remaining = Math.max(0, total - start);
     const agents = Array.from(
-      { length: Math.min(pageSize, total - start) },
+      { length: Math.min(pageSize, remaining) },
       (_, i) => makeAgent(start + i)
     );
     return Promise.resolve({ agents, total, page, pageSize });

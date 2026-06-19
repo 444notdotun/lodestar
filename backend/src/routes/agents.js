@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  listAgents,
+  listAgentsPage,
   getAgent,
   getAgentPolicy,
   getAgentScore,
@@ -27,13 +27,23 @@ let agentsCache = null;
 let agentsCacheTime = 0;
 const AGENTS_CACHE_TTL = 30_000;
 
+const CACHE_BATCH_SIZE = 50;
+
 async function getCachedAgents() {
   const now = Date.now();
   if (agentsCache && now - agentsCacheTime < AGENTS_CACHE_TTL) return agentsCache;
-  const fresh = await listAgents(1000);
-  agentsCache = fresh;
+
+  const total = await getAgentCount();
+  const pages = Math.ceil(total / CACHE_BATCH_SIZE);
+  const results = [];
+  for (let i = 0; i < pages; i++) {
+    const batch = await listAgentsPage(i, CACHE_BATCH_SIZE);
+    results.push(...batch);
+  }
+
+  agentsCache = results;
   agentsCacheTime = now;
-  return fresh;
+  return agentsCache;
 }
 
 function sortAgents(agents, sort) {
@@ -57,8 +67,10 @@ function requireAgentsContract(_req, res, next) {
 // GET /api/agents — paginated + sorted list
 router.get('/agents', requireAgentsContract, async (req, res) => {
   try {
-    const page = Math.max(0, parseInt(req.query.page ?? '0', 10));
-    const pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize ?? '12', 10)));
+    const parsedPage = Number.parseInt(String(req.query.page ?? '0'), 10);
+    const parsedPageSize = Number.parseInt(String(req.query.pageSize ?? '12'), 10);
+    const page = Number.isFinite(parsedPage) ? Math.max(0, parsedPage) : 0;
+    const pageSize = Number.isFinite(parsedPageSize) ? Math.min(100, Math.max(1, parsedPageSize)) : 12;
     const sort = ['score', 'payments', 'newest'].includes(req.query.sort)
       ? req.query.sort
       : 'score';
