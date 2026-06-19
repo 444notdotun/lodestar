@@ -29,6 +29,30 @@ pub enum DataKey {
     ServiceIdsByCategory(String),
 }
 
+fn active_service_exists(env: &Env, provider: &Address, endpoint: &String) -> bool {
+    let ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ServiceIds)
+        .unwrap_or_else(|| vec![&env]);
+
+    let mut i = 0;
+    while i < ids.len() {
+        if let Some(entry) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, ServiceEntry>(&DataKey::Service(ids.get(i).unwrap()))
+        {
+            if entry.active && entry.provider == *provider && entry.endpoint == *endpoint {
+                return true;
+            }
+        }
+        i += 1;
+    }
+
+    false
+}
+
 #[contract]
 pub struct LodestarRegistry;
 
@@ -44,6 +68,11 @@ impl LodestarRegistry {
         category: String,
     ) -> u64 {
         provider.require_auth();
+
+        assert!(
+            !active_service_exists(&env, &provider, &endpoint),
+            "Active service with same provider and endpoint already exists"
+        );
 
         let counter: u64 = env
             .storage()
