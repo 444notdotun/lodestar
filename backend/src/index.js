@@ -71,7 +71,7 @@ app.use((err, _req, res, _next) => {
   });
 });
 
-const server = app.listen(config.port, () => {
+
   logger.info(
     {
       port: config.port,
