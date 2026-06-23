@@ -330,6 +330,21 @@ describe('POST /api/agents/:address/payment (HMAC + rate limit + idempotency)', 
     expect(mockRecordPaymentOnChain).toHaveBeenCalledTimes(2);
   });
 
+  it('should return newScore when agent is below min_score_to_earn (enforced by contract)', async () => {
+    // The contract enforces min_score_to_earn: successful payment stats are
+    // recorded but score does not increase when agent.score < policy.min_score_to_earn.
+    // The backend faithfully returns whatever score the contract reports.
+    mockRecordPaymentOnChain.mockResolvedValueOnce(true);
+    mockGetAgent.mockResolvedValueOnce({ score: 100 }); // score unchanged
+
+    const res = await makeRequest();
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.newScore).toBe(100);
+    expect(mockRecordPaymentOnChain).toHaveBeenCalledOnce();
+  });
+
   it('should scope keys per agent — same key for different agents does not collide', async () => {
     const agentB = 'GBXDMZV5VQTPV6Q2W5KQEZUMHBG7TDMKH6Q3JZXTPQ7YRPLSAVQLKL2';
     mockRecordPaymentOnChain.mockResolvedValue(true);
