@@ -34,4 +34,11 @@ describe('category metadata', () => {
     expect(CATEGORY_ICONS.weather.props['data-category-icon']).toBe('weather');
     expect(CATEGORY_ICONS.data.type).toBe('svg');
   });
+
+  it('falls back safely for unexpected category values', () => {
+    expect(getCategoryMeta('unknown-category')).toMatchObject({
+      label: 'Unknown',
+      badgeClass: 'bg-gray-50 text-gray-700',
+    });
+  });
 });

@@ -7,7 +7,7 @@ export interface CategoryMeta {
   badgeClass: string;
 }
 
-function categoryIcon(category: Category, paths: ReactElement | ReactElement[]) {
+function categoryIcon(category: string, paths: ReactElement | ReactElement[]) {
   return (
     <svg
       aria-hidden="true"
@@ -87,6 +87,16 @@ export const CATEGORY_META: Record<Category, CategoryMeta> = {
   },
 };
 
+const UNKNOWN_CATEGORY_META: CategoryMeta = {
+  label: 'Unknown',
+  icon: categoryIcon('unknown', [
+    <circle key="circle" cx="12" cy="12" r="8" />,
+    <path key="mark" d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4" />,
+    <path key="dot" d="M12 17h.01" />,
+  ]),
+  badgeClass: 'bg-gray-50 text-gray-700',
+};
+
 export const CATEGORY_FILTERS: { label: string; value: Category | 'all' }[] = [
   { label: 'All', value: 'all' },
   ...Object.entries(CATEGORY_META).map(([value, meta]) => ({
@@ -95,6 +105,10 @@ export const CATEGORY_FILTERS: { label: string; value: Category | 'all' }[] = [
   })),
 ];
 
-export function getCategoryMeta(category: Category): CategoryMeta {
-  return CATEGORY_META[category];
+export function getCategoryMeta(category: Category | string | undefined): CategoryMeta {
+  if (category && category in CATEGORY_META) {
+    return CATEGORY_META[category as Category];
+  }
+
+  return UNKNOWN_CATEGORY_META;
 }
