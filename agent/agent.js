@@ -19,13 +19,7 @@ const AGENT_SECRET         = process.env.AGENT_STELLAR_SECRET;
 const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
-const AGENT_NAME           = process.env.AGENT_NAME ?? 'LodestarAgent';
-const AGENT_DESC           = process.env.AGENT_DESC ?? 'Autonomous x402 agent powered by Lodestar service discovery';
-const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX ?? '0.001';
-const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY ?? '1.00';
-const ALLOWED_CATS         = (process.env.AGENT_ALLOWED_CATEGORIES ?? '').split(',').filter(Boolean);
 
-const agentKeypair = Keypair.fromSecret(AGENT_SECRET);
 const AGENT_ADDRESS = agentKeypair.publicKey();
 
 const logger = pino({
@@ -161,6 +155,12 @@ async function recordOutcome(amountUsdc, success, serviceId) {
 
 // ── x402 client ───────────────────────────────────────────────────────────────
 
+const httpClient = buildHttpClient();
+
+export function dispose() {
+  logger.info('Shutting down Lodestar Agent');
+}
+
 const STROOPS_PER_USDC = 10_000_000;
 
 function stroopsToUsdcStr(stroops) {
@@ -240,9 +240,6 @@ function selectWeighted(services) {
 
 // ── Agent task ────────────────────────────────────────────────────────────────
 
-export async function runTask(category, buildUrl, scoringEnabled) {
-  const minReputation = parseInt(process.env.AGENT_MIN_SERVICE_REPUTATION ?? '0', 10);
-  const maxRetries    = parseInt(process.env.AGENT_MAX_SERVICE_RETRIES    ?? '3', 10);
 
   const taskStart = Date.now();
   logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');
@@ -257,57 +254,7 @@ export async function runTask(category, buildUrl, scoringEnabled) {
     return { success: false, priceUsdc: null };
   }
 
-  const eligible = services.filter(s => s.reputation >= minReputation);
-  if (!eligible.length) {
-    logger.error(
-      { event: EVENT.TASK_START, category, servicesFound: services.length, minReputation },
-      'No services meet minimum reputation threshold'
-    );
-    return { success: false, priceUsdc: null };
-  }
 
-  // Top-N candidates by reputation; weighted random selection reduces single-point manipulation.
-  const candidates = [...eligible].sort((a, b) => b.reputation - a.reputation).slice(0, maxRetries);
-  const failed = new Set();
-
-  for (let attempt = 1; attempt <= candidates.length; attempt++) {
-    const available = candidates.filter(s => !failed.has(s.id));
-    if (!available.length) break;
-
-    const selected = selectWeighted(available);
-
-    logger.info(
-      {
-        event: EVENT.SERVICE_SELECTED,
-        category,
-        serviceId: selected.id,
-        serviceName: selected.name,
-        priceUsdc: selected.price_usdc,
-        servicesFound: services.length,
-        attempt,
-      },
-      'Service selected'
-    );
-
-    if (scoringEnabled) {
-      const check = await checkSpend(selected.price_usdc, category);
-      if (!check.allowed) {
-        logger.warn(
-          {
-            event: EVENT.SPEND_CHECK_BLOCKED,
-            category,
-            serviceId: selected.id,
-            serviceName: selected.name,
-            priceUsdc: selected.price_usdc,
-            reason: check.reason,
-          },
-          'Payment blocked by spending policy'
-        );
-        return { success: false, priceUsdc: null };
-      }
-      logger.info(
-        { event: EVENT.SPEND_CHECK_PASSED, category, serviceId: selected.id, serviceName: selected.name, priceUsdc: selected.price_usdc },
-        'Spending policy check passed'
       );
     }
 
@@ -317,53 +264,7 @@ export async function runTask(category, buildUrl, scoringEnabled) {
       'Sending x402 payment on Stellar'
     );
 
-    const httpClient = buildHttpClient();
-    let response;
-    try {
-      response = await httpClient.fetch(endpointUrl);
-    } catch (err) {
-      logger.error(
-        { event: EVENT.PAYMENT_FAILED, category, serviceId: selected.id, serviceName: selected.name, priceUsdc: selected.price_usdc, err },
-        'x402 payment failed'
-      );
-      if (scoringEnabled) await recordOutcome(selected.price_usdc, false, selected.id);
-      failed.add(selected.id);
-      continue;
-    }
 
-    if (!response.ok) {
-      logger.error(
-        { event: EVENT.PAYMENT_FAILED, category, serviceId: selected.id, serviceName: selected.name, priceUsdc: selected.price_usdc, httpStatus: response.status },
-        'Service error after payment'
-      );
-      if (scoringEnabled) await recordOutcome(selected.price_usdc, false, selected.id);
-      // Payment settled but service returned bad data — penalise service reputation.
-      await submitReputation(selected.id, false);
-      failed.add(selected.id);
-      continue;
-    }
-
-    const txHash = response.headers.get('x-payment-transaction') ?? '(no hash)';
-    const data = await response.json();
-    const taskDurationMs = Date.now() - taskStart;
-
-    logger.info(
-      {
-        event: EVENT.PAYMENT_SUCCESS,
-        category,
-        serviceId: selected.id,
-        serviceName: selected.name,
-        priceUsdc: selected.price_usdc,
-        txHash,
-        scoreBefore: currentScore,
-        taskDurationMs,
-      },
-      'Payment completed'
-    );
-    logger.debug({ data }, 'Response data received');
-
-    if (scoringEnabled) await recordOutcome(selected.price_usdc, true, selected.id);
-    await submitReputation(selected.id, true);
 
     return { success: true, priceUsdc: selected.price_usdc };
   }
@@ -398,7 +299,7 @@ export async function main() {
   let totalUsdcSpent = 0;
 
   for (const { category, buildUrl } of tasks) {
-    const result = await runTask(category, buildUrl, scoringEnabled);
+    const result = await runTask(category, buildUrl, scoringEnabled, httpClient);
     if (result.success) {
       successCount++;
       totalUsdcSpent += parseFloat(result.priceUsdc ?? '0');
@@ -433,6 +334,8 @@ export async function main() {
 // ── Entry point guard ─────────────────────────────────────────────────────────
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  process.on('SIGTERM', () => { dispose(); process.exit(0); });
+  process.on('SIGINT',  () => { dispose(); process.exit(0); });
   main().catch((err) => {
     logger.error({ err }, 'Agent crashed');
     process.exit(1);

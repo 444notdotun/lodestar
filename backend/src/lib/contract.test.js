@@ -15,18 +15,39 @@ vi.mock('../config.js', () => ({
   },
 }));
 
+const { mockSimulateTransaction } = vi.hoisted(() => ({
+  mockSimulateTransaction: vi.fn(),
+}));
+
+vi.mock('./stellar.js', () => ({
+  getStellarServer: () => ({
+    simulateTransaction: mockSimulateTransaction,
+  }),
+  getNetworkPassphrase: () => 'Test SDF Network ; September 2015',
+}));
+
+import sdkPkg from '@stellar/stellar-sdk';
 import * as contractLib from './contract.js';
 
+const { StrKey } = sdkPkg;
+const VALID_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32));
+
 const { mapAgent, mapPolicy } = contractLib;
+
+function resetMockServer() {
+  mockSimulateTransaction.mockReset();
+}
 
 describe('registerServiceOnChain duplicate checks', () => {
   let activeServiceExistsSpy;
 
   beforeEach(() => {
+    process.env.SEEDING_MODE = 'true';
     activeServiceExistsSpy = vi.spyOn(contractLib.contractHelpers, 'activeServiceExists');
   });
 
   afterEach(() => {
+    delete process.env.SEEDING_MODE;
     vi.restoreAllMocks();
   });
 
@@ -54,6 +75,14 @@ describe('registerServiceOnChain duplicate checks', () => {
 
     expect(activeServiceExistsSpy).toHaveBeenCalled();
   });
+
+  it('rejects server-signed registration when seeding mode is disabled', async () => {
+    delete process.env.SEEDING_MODE;
+
+    await expect(
+      contractLib.registerServiceOnChain('Service', 'Description', 'https://test.example.com', '0.001', 'test')
+    ).rejects.toThrow('Server-signed service registration is disabled');
+  });
 });
 
 describe('activeServiceExists pagination', () => {
@@ -76,6 +105,31 @@ describe('activeServiceExists pagination', () => {
 
     expect(fetchServices).toHaveBeenNthCalledWith(1, { page: 0, pageSize: 20 });
     expect(fetchServices).toHaveBeenNthCalledWith(2, { page: 1, pageSize: 20 });
+  });
+});
+
+describe('listServicesByProvider pagination', () => {
+  it('collects matching services across every page', async () => {
+    const provider = 'GA7FYRB5CREWMDK2VIKVKWSW7V3YCCU3B3UHBJQ6JZ5OC7V7M5D4T8KJ';
+    const fetchServices = vi
+      .fn()
+      .mockResolvedValueOnce([
+        { id: 1, provider },
+        { id: 2, provider: 'GAOTHER' },
+      ])
+      .mockResolvedValueOnce([
+        { id: 3, provider },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await expect(contractLib.listServicesByProvider(provider, fetchServices)).resolves.toEqual([
+      { id: 1, provider },
+      { id: 3, provider },
+    ]);
+
+    expect(fetchServices).toHaveBeenNthCalledWith(1, { page: 0, pageSize: 20 });
+    expect(fetchServices).toHaveBeenNthCalledWith(2, { page: 1, pageSize: 20 });
+    expect(fetchServices).toHaveBeenNthCalledWith(3, { page: 2, pageSize: 20 });
   });
 });
 
@@ -458,5 +512,72 @@ describe('mapPolicy', () => {
     const result = mapPolicy(raw);
 
     expect(result.allowed_categories).toEqual([]);
+  });
+});
+
+describe('simulateReadBatch', () => {
+  let contract;
+
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+  });
+
+  it('returns empty array when operations is empty', async () => {
+    const results = await contractLib.simulateReadBatch([]);
+
+    expect(results).toEqual([]);
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(0);
+  });
+
+  it('throws ContractError on simulation error', async () => {
+    mockSimulateTransaction.mockResolvedValueOnce({ error: 'simulation exploded' });
+    const ops = [contract.call('get_service_count')];
+
+    await expect(contractLib.simulateReadBatch(ops)).rejects.toThrow('Batch simulation failed');
+  });
+
+  it('returns array of retvals for multiple operations', async () => {
+    mockSimulateTransaction
+      .mockResolvedValueOnce({ result: { retval: 'result_1' } })
+      .mockResolvedValueOnce({ result: { retval: 'result_2' } });
+
+    const ops = [
+      contract.call('get_service_count'),
+      contract.call('get_agent_count'),
+    ];
+
+    const results = await contractLib.simulateReadBatch(ops);
+
+    expect(results).toEqual(['result_1', 'result_2']);
+    expect(mockSimulateTransaction).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('rpcMetrics', () => {
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+  });
+
+  it('getRpcMetrics returns current counts', () => {
+    const metrics = contractLib.getRpcMetrics();
+    expect(metrics).toEqual({
+      getAccount: 0,
+      simulateTransaction: 0,
+      sendTransaction: 0,
+      getTransaction: 0,
+    });
+  });
+
+  it('resetRpcMetrics clears all counters', async () => {
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: 'x' } });
+    const contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    await contractLib.simulateReadBatch([contract.call('get_service_count')]);
+
+    contractLib.resetRpcMetrics();
+    const metrics = contractLib.getRpcMetrics();
+    expect(metrics.simulateTransaction).toBe(0);
   });
 });
