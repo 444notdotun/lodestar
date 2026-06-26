@@ -35,8 +35,8 @@ async function creditPayment(agentAddress, txHash, priceStroops, serviceLabel) {
     );
     return;
   }
-  logger.info({ agentAddress, txHash }, `${serviceLabel} payment credited to registered agent`);
   await recordPaymentOnChain(agentAddress, priceStroops, true);
+  logger.info({ agentAddress, txHash }, `${serviceLabel} payment credited to registered agent`);
 }
 
 // Activity feed lives in its own dependency-free module so the feed and

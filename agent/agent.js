@@ -20,6 +20,20 @@ const RPC_URL              = process.env.STELLAR_RPC_URL;
 const LODESTAR_API_URL     = process.env.LODESTAR_API_URL;
 const LODESTAR_HMAC_SECRET = process.env.LODESTAR_HMAC_SECRET ?? '';
 
+const AGENT_NAME           = process.env.AGENT_NAME           ?? 'LodestarAgent';
+const AGENT_DESC           = process.env.AGENT_DESC           ?? '';
+const MAX_PER_TX           = process.env.AGENT_MAX_PER_TX     ?? '0.001';
+const MAX_PER_DAY          = process.env.AGENT_MAX_PER_DAY    ?? '1.00';
+const ALLOWED_CATS         = process.env.AGENT_ALLOWED_CATEGORIES
+  ? process.env.AGENT_ALLOWED_CATEGORIES.split(',').map(s => s.trim()).filter(Boolean)
+  : ['weather', 'search'];
+
+let agentKeypair;
+try {
+  agentKeypair = Keypair.fromSecret(AGENT_SECRET);
+} catch {
+  throw new Error(`Invalid AGENT_STELLAR_SECRET: unable to parse secret key`);
+}
 const AGENT_ADDRESS = agentKeypair.publicKey();
 
 const logger = pino({
@@ -240,6 +254,9 @@ function selectWeighted(services) {
 
 // ── Agent task ────────────────────────────────────────────────────────────────
 
+export async function runTask(category, buildUrl, scoringEnabled, client = httpClient) {
+  const minReputation = parseInt(process.env.AGENT_MIN_SERVICE_REPUTATION ?? '0', 10);
+  const maxRetries    = parseInt(process.env.AGENT_MAX_SERVICE_RETRIES    ?? '3', 10);
 
   const taskStart = Date.now();
   logger.info({ event: EVENT.TASK_START, category, agentAddress: AGENT_ADDRESS }, 'Task started');
@@ -254,6 +271,14 @@ function selectWeighted(services) {
     return { success: false, priceUsdc: null };
   }
 
+  const eligible = services.filter(s => s.reputation >= minReputation);
+  if (!eligible.length) {
+    logger.error(
+      { event: EVENT.TASK_START, category, servicesFound: services.length, minReputation },
+      'No services meet minimum reputation threshold'
+    );
+    return { success: false, priceUsdc: null };
+  }
 
   // Top-N candidates by reputation; weighted random selection reduces single-point manipulation.
   const candidates = [...eligible].sort((a, b) => b.reputation - a.reputation).slice(0, maxRetries);
@@ -307,7 +332,68 @@ function selectWeighted(services) {
       'Sending x402 payment on Stellar'
     );
 
+    const paymentPayload = { url: endpointUrl, method: 'GET' };
+    const paymentHeaders = client.encodePaymentSignatureHeader(paymentPayload);
+    let response;
+    try {
+      response = await fetch(endpointUrl, { headers: paymentHeaders, keepalive: true });
+    } catch (err) {
+      logger.error(
+        {
+          event: EVENT.PAYMENT_FAILED,
+          category,
+          serviceId: selected.id,
+          serviceName: selected.name,
+          priceUsdc: selected.price_usdc,
+          err,
+          taskDurationMs: Date.now() - taskStart,
+        },
+        'Payment failed — network error'
+      );
+      if (scoringEnabled) await recordOutcome(selected.price_usdc, false, selected.id);
+      failed.add(selected.id);
+      continue;
+    }
 
+    if (!response.ok) {
+      logger.error(
+        {
+          event: EVENT.PAYMENT_FAILED,
+          category,
+          serviceId: selected.id,
+          serviceName: selected.name,
+          priceUsdc: selected.price_usdc,
+          httpStatus: response.status,
+          taskDurationMs: Date.now() - taskStart,
+        },
+        'Payment failed — endpoint error'
+      );
+      if (scoringEnabled) await recordOutcome(selected.price_usdc, false, selected.id);
+      // Payment settled but service returned bad data — penalise service reputation.
+      await submitReputation(selected.id, false);
+      failed.add(selected.id);
+      continue;
+    }
+
+    const txHash = response.headers.get('x-payment-transaction') ?? '(no hash)';
+    const scoreBefore = currentScore;
+    if (scoringEnabled) await recordOutcome(selected.price_usdc, true, selected.id);
+
+    logger.info(
+      {
+        event: EVENT.PAYMENT_SUCCESS,
+        category,
+        serviceId: selected.id,
+        serviceName: selected.name,
+        priceUsdc: selected.price_usdc,
+        txHash,
+        scoreBefore,
+        taskDurationMs: Date.now() - taskStart,
+      },
+      'Payment successful'
+    );
+
+    await submitReputation(selected.id, true);
 
     return { success: true, priceUsdc: selected.price_usdc };
   }

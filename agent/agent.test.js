@@ -184,6 +184,14 @@ describe('runTask — no services found', () => {
 });
 
 describe('runTask — spend check blocked', () => {
+  let randomSpy;
+  beforeEach(() => {
+    randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+  });
+  afterEach(() => {
+    randomSpy.mockRestore();
+  });
+
   it('logs spend_check_blocked with reason field', async () => {
     global.fetch = buildFetch({ canSpend: false });
 
