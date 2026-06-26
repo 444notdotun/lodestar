@@ -46,6 +46,9 @@ describe('Navbar active-link highlighting', () => {
 
     const agents = screen.getByRole('link', { name: 'Agents' });
     expect(agents).not.toHaveAttribute('aria-current');
+
+    const home = screen.getByRole('link', { name: 'Lodestar' });
+    expect(home).not.toHaveAttribute('aria-current');
   });
 
   it('highlights a parent link on nested routes via prefix match', () => {
@@ -64,9 +67,12 @@ describe('Navbar active-link highlighting', () => {
     expect(register).not.toHaveAttribute('aria-current');
   });
 
-  it('does not highlight any nav link on the home route', () => {
+  it('marks the home link as active on the home route and no others', () => {
     setPathname('/');
     render(<Navbar />);
+
+    const home = screen.getByRole('link', { name: 'Lodestar' });
+    expect(home).toHaveAttribute('aria-current', 'page');
 
     for (const label of ['Registry', 'Agents', 'Register', 'Demo']) {
       expect(
