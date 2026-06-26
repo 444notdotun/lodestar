@@ -15,13 +15,19 @@ vi.mock('../config.js', () => ({
   },
 }));
 
-const { mockSimulateTransaction } = vi.hoisted(() => ({
+const { mockGetAccount, mockSimulateTransaction, mockSendTransaction, mockGetTransaction } = vi.hoisted(() => ({
+  mockGetAccount: vi.fn(),
   mockSimulateTransaction: vi.fn(),
+  mockSendTransaction: vi.fn(),
+  mockGetTransaction: vi.fn(),
 }));
 
 vi.mock('./stellar.js', () => ({
   getStellarServer: () => ({
+    getAccount: mockGetAccount,
     simulateTransaction: mockSimulateTransaction,
+    sendTransaction: mockSendTransaction,
+    getTransaction: mockGetTransaction,
   }),
   getNetworkPassphrase: () => 'Test SDF Network ; September 2015',
 }));
@@ -35,7 +41,10 @@ const VALID_CONTRACT_ID = StrKey.encodeContract(Buffer.alloc(32));
 const { mapAgent, mapPolicy } = contractLib;
 
 function resetMockServer() {
+  mockGetAccount.mockReset();
   mockSimulateTransaction.mockReset();
+  mockSendTransaction.mockReset();
+  mockGetTransaction.mockReset();
 }
 
 describe('registerServiceOnChain duplicate checks', () => {
@@ -512,6 +521,52 @@ describe('mapPolicy', () => {
     const result = mapPolicy(raw);
 
     expect(result.allowed_categories).toEqual([]);
+  });
+});
+
+
+describe('simulateAndSubmit transaction polling', () => {
+  let contract;
+
+  beforeEach(() => {
+    resetMockServer();
+    contractLib.resetRpcMetrics();
+    contract = new sdkPkg.Contract(VALID_CONTRACT_ID);
+    mockGetAccount.mockResolvedValue({ sequence: '1' });
+    mockSimulateTransaction.mockResolvedValue({ result: { retval: sdkPkg.xdr.ScVal.scvVoid() } });
+    contractLib.__setAssembleTransactionForTest((tx) => ({ build: () => tx }));
+    mockSendTransaction.mockResolvedValue({ status: 'PENDING', hash: 'txhash123' });
+  });
+
+  afterEach(() => {
+    contractLib.__setAssembleTransactionForTest();
+  });
+
+  it('throws TransactionFailedError when getTransaction reports FAILED', async () => {
+    mockGetTransaction.mockResolvedValueOnce({ status: 'FAILED', resultXdr: 'raw-failure' });
+
+    await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toMatchObject({
+      name: 'TransactionFailedError',
+      code: 'TRANSACTION_FAILED',
+      hash: 'txhash123',
+    });
+  });
+
+  it('propagates getTransaction XDR parse errors instead of assuming success', async () => {
+    const parseErr = new Error('Bad union switch: XDR parse failed');
+    mockGetTransaction.mockRejectedValueOnce(parseErr);
+
+    await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toBe(parseErr);
+  });
+
+  it('throws ReturnValueParseError when a successful transaction return value cannot be parsed', async () => {
+    mockGetTransaction.mockResolvedValueOnce({ status: 'SUCCESS', returnValue: 'not-an-scval' });
+
+    await expect(contractLib.simulateAndSubmit(contract.call('get_service_count'))).rejects.toMatchObject({
+      name: 'ReturnValueParseError',
+      code: 'RETURN_VALUE_PARSE_FAILED',
+      hash: 'txhash123',
+    });
   });
 });
 

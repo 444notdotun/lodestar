@@ -19,6 +19,12 @@ import config from '../config.js';
 import { getStellarServer, getNetworkPassphrase } from './stellar.js';
 import logger from './logger.js';
 import { ContractError } from './ContractError.js';
+import {
+  ReturnValueParseError,
+  SimulationError,
+  TransactionFailedError,
+  TransactionTimeoutError,
+} from './contractErrors.js';
 
 
 const TIMEOUT = 30;
@@ -51,6 +57,11 @@ const submitQueue = new PQueue({ concurrency: 1 });
 let currentSeqNum = null;
 let lastSeqSyncTime = 0;
 const preparedRegistrySubmissions = new Map();
+let assembleTransactionForSubmit = rpc.assembleTransaction;
+
+export function __setAssembleTransactionForTest(fn) {
+  assembleTransactionForSubmit = fn ?? rpc.assembleTransaction;
+}
 
 export function getSubmitQueueDepth() {
   return submitQueue.size + submitQueue.pending;
@@ -134,10 +145,10 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   logRpcCall('simulateTransaction', Date.now() - simStart);
 
   if (rpc.Api.isSimulationError(simResult)) {
-    throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
+    throw new SimulationError(`Simulation failed: ${simResult.error}`, simResult.error);
   }
 
-  const preparedTx = rpc.assembleTransaction(tx, simResult).build();
+  const preparedTx = assembleTransactionForSubmit(tx, simResult).build();
   preparedTx.sign(keypair);
 
   const sendStart = Date.now();
@@ -164,35 +175,34 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
       logger.warn({ retryCount }, 'txBAD_SEQ encountered, retrying transaction');
       return _simulateAndSubmit(operation, signer, retryCount + 1);
     }
-    throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult || sendResult)}`, 'TRANSACTION_FAILED');
+    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult || sendResult)}`, sendResult.hash, sendResult.errorResult || sendResult);
   }
+
+  logger.debug({ hash: sendResult.hash }, 'Submitted Soroban transaction');
 
   let getResult;
   for (let i = 0; i < 20; i++) {
-    try {
-      const txStart = Date.now();
-      getResult = await server.getTransaction(sendResult.hash);
-      logRpcCall('getTransaction', Date.now() - txStart);
-      if (getResult.status !== 'NOT_FOUND') break;
-    } catch (parseErr) {
-      // Protocol-22 XDR parse errors on confirmed txs — treat as SUCCESS
-      if (parseErr.message?.includes('Bad union switch') || parseErr.message?.includes('XDR')) {
-        logger.warn({ hash: sendResult.hash }, 'getTransaction XDR parse error — assuming confirmed');
-        // Optimistic increment on success
-        currentSeqNum += 1n;
-        return { status: 'SUCCESS', returnValue: null };
-      }
-      throw parseErr;
-    }
+    const txStart = Date.now();
+    getResult = await server.getTransaction(sendResult.hash);
+    logRpcCall('getTransaction', Date.now() - txStart);
+    if (getResult.status !== 'NOT_FOUND') break;
     await new Promise((r) => setTimeout(r, 1500));
   }
 
   if (!getResult || getResult.status === 'NOT_FOUND') {
-    throw new ContractError(`Transaction not confirmed after polling: ${sendResult.hash}`, 'TRANSACTION_TIMEOUT');
+    throw new TransactionTimeoutError(`Transaction not confirmed after polling: ${sendResult.hash}`, sendResult.hash);
   }
 
   if (getResult.status === 'FAILED') {
-    throw new ContractError(`Transaction failed on-chain: ${sendResult.hash}`, 'ON_CHAIN_FAILURE');
+    throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
+  }
+
+  if (getResult.returnValue) {
+    try {
+      getResult.nativeReturnValue = scValToNative(getResult.returnValue);
+    } catch (err) {
+      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+    }
   }
 
   // Optimistic increment on success
@@ -201,7 +211,7 @@ async function _simulateAndSubmit(operation, signer, retryCount = 0) {
   return getResult;
 }
 
-function simulateAndSubmit(operation, signer) {
+export function simulateAndSubmit(operation, signer) {
   return submitQueue.add(() => _simulateAndSubmit(operation, signer, 0));
 }
 
@@ -242,7 +252,7 @@ async function buildUnsignedTx(operation) {
     throw new ContractError(`Simulation failed: ${simResult.error}`, 'SIMULATION_FAILED');
   }
 
-  return rpc.assembleTransaction(tx, simResult).build().toXDR();
+  return assembleTransactionForSubmit(tx, simResult).build().toXDR();
 }
 
 async function simulateRead(operation) {
@@ -469,8 +479,7 @@ export async function registerServiceOnChain(
     );
 
     const result = await simulateAndSubmit(op);
-    const retval = result.returnValue;
-    return retval ? Number(scValToNative(retval)) : null;
+    return result.nativeReturnValue !== undefined ? Number(result.nativeReturnValue) : null;
   } catch (err) {
     logger.error({ err, name }, 'registerServiceOnChain failed');
     throw err;
@@ -797,8 +806,7 @@ export async function registerAgentOnChain(agentAddress, name, description) {
     );
 
     const result = await simulateAndSubmit(op);
-    const retval = result.returnValue;
-    return retval ? Number(scValToNative(retval)) : null;
+    return result.nativeReturnValue !== undefined ? Number(result.nativeReturnValue) : null;
   } catch (err) {
     logger.error({ err, agentAddress, name }, 'registerAgentOnChain failed');
     throw err;
@@ -1004,35 +1012,40 @@ async function submitSignedTx(signedXdr) {
   const sendResult = await server.sendTransaction(tx);
   logRpcCall('sendTransaction', Date.now() - sendStart);
   if (sendResult.status === 'ERROR') {
-    throw new ContractError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, 'TRANSACTION_FAILED');
+    throw new TransactionFailedError(`Transaction failed: ${JSON.stringify(sendResult.errorResult)}`, sendResult.hash, sendResult.errorResult);
   }
+
+  logger.debug({ hash: sendResult.hash }, 'Submitted signed Soroban transaction');
 
   let getResult;
   for (let i = 0; i < 20; i++) {
-    try {
-      const txStart = Date.now();
-      getResult = await server.getTransaction(sendResult.hash);
-      logRpcCall('getTransaction', Date.now() - txStart);
-      if (getResult.status !== 'NOT_FOUND') break;
-    } catch (parseErr) {
-      if (parseErr.message?.includes('Bad union switch') || parseErr.message?.includes('XDR')) {
-        return { hash: sendResult.hash, returnValue: null };
-      }
-      throw parseErr;
-    }
+    const txStart = Date.now();
+    getResult = await server.getTransaction(sendResult.hash);
+    logRpcCall('getTransaction', Date.now() - txStart);
+    if (getResult.status !== 'NOT_FOUND') break;
     await new Promise((r) => setTimeout(r, 1500));
   }
 
   if (!getResult || getResult.status === 'NOT_FOUND') {
-    throw new ContractError(`Transaction not confirmed: ${sendResult.hash}`, 'TRANSACTION_TIMEOUT');
+    throw new TransactionTimeoutError(`Transaction not confirmed: ${sendResult.hash}`, sendResult.hash);
   }
   if (getResult.status === 'FAILED') {
-    throw new ContractError(`Transaction failed on-chain: ${sendResult.hash}`, 'ON_CHAIN_FAILURE');
+    throw new TransactionFailedError(`Transaction failed on-chain: ${sendResult.hash}`, sendResult.hash, getResult);
+  }
+
+  let nativeReturnValue;
+  if (getResult.returnValue) {
+    try {
+      nativeReturnValue = scValToNative(getResult.returnValue);
+    } catch (err) {
+      throw new ReturnValueParseError(`Transaction succeeded but return value could not be parsed: ${sendResult.hash}`, sendResult.hash, err);
+    }
   }
 
   return {
     hash: sendResult.hash,
     returnValue: getResult.returnValue ?? null,
+    nativeReturnValue,
   };
 }
 
@@ -1047,9 +1060,9 @@ export async function submitSignedAgentTx(signedXdr) {
 }
 
 export async function submitSignedRegistryTx(signedXdr) {
-  const { hash, returnValue } = await submitSignedTx(signedXdr);
+  const { hash, nativeReturnValue } = await submitSignedTx(signedXdr);
   return {
     hash,
-    id: returnValue ? Number(scValToNative(returnValue)) : null,
+    id: nativeReturnValue !== undefined ? Number(nativeReturnValue) : null,
   };
 }
