@@ -78,6 +78,15 @@ pub struct SpendingPolicy {
     pub last_reset_ledger: u64,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScoringConfig {
+    pub initial_score: i32,
+    pub score_success: i32,
+    pub score_failure: i32,
+    pub flag_penalty: i32,
+}
+
 // ── Contract ─────────────────────────────────────────────────────────────────
 #[contract]
 pub struct LodestarAgents;
@@ -584,6 +593,16 @@ impl LodestarAgents {
             .persistent()
             .extend_ttl(&policy_key, MAX_TTL, MAX_TTL);
     }
+
+    // Get the current scoring configuration constants
+    pub fn get_scoring_config(env: Env) -> ScoringConfig {
+        ScoringConfig {
+            initial_score: INITIAL_SCORE,
+            score_success: SCORE_SUCCESS,
+            score_failure: SCORE_FAILURE,
+            flag_penalty: FLAG_PENALTY,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -824,5 +843,18 @@ mod test {
                 &admin,
             )
             .is_err());
+    }
+
+    #[test]
+    fn test_get_scoring_config() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, LodestarAgents);
+        let client = LodestarAgentsClient::new(&env, &contract_id);
+
+        let config = client.get_scoring_config();
+        assert_eq!(config.initial_score, INITIAL_SCORE);
+        assert_eq!(config.score_success, SCORE_SUCCESS);
+        assert_eq!(config.score_failure, SCORE_FAILURE);
+        assert_eq!(config.flag_penalty, FLAG_PENALTY);
     }
 }
