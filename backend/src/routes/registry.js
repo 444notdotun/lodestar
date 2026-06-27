@@ -4,6 +4,7 @@ import {
   listServicesByProvider,
   getService,
   getServiceCount,
+  deactivateServiceOnChain,
   updateReputation,
   isAllowedReputationAgent,
   buildUnsignedRegistryTx,
@@ -109,6 +110,81 @@ router.get("/services/:id", async (req, res) => {
   } catch (err) {
     logger.error({ err }, "GET /api/services/:id failed");
     res.status(500).json({ error: "Failed to fetch service", code: "FETCH_ERROR" });
+  }
+});
+
+/**
+ * POST /api/services/:id/deactivate
+ * Provider-authenticated deactivation. The caller must supply a valid
+ * `providerAddress` that matches the service's registered provider. The
+ * on-chain contract enforces `provider.require_auth()` so the signed
+ * transaction must come from the provider's keypair.
+ *
+ * Body: { providerAddress: string }
+ */
+router.post("/services/:id/deactivate", writeRateLimiter(), async (req, res) => {
+  let id;
+  try {
+    id = parseInt(req.params.id, 10);
+    if (isNaN(id) || id < 1) {
+      return res
+        .status(400)
+        .json({ error: "Invalid service ID", code: "INVALID_ID" });
+    }
+
+    const { providerAddress } = req.body ?? {};
+    if (!isValidStellarAddress(providerAddress)) {
+      return res.status(400).json({
+        error: "`providerAddress` must be a valid Stellar address",
+        code: "INVALID_BODY",
+      });
+    }
+
+    const service = await getService(id);
+    if (!service) {
+      return res
+        .status(404)
+        .json({ error: "Service not found", code: "NOT_FOUND" });
+    }
+
+    if (service.provider !== providerAddress) {
+      return res.status(403).json({
+        error: "Only the provider that registered this service can deactivate it",
+        code: "PROVIDER_MISMATCH",
+      });
+    }
+
+    if (!service.active) {
+      return res.status(409).json({
+        error: "Service is already deactivated",
+        code: "ALREADY_INACTIVE",
+      });
+    }
+
+    await deactivateServiceOnChain(id, providerAddress);
+    logger.info({ id, providerAddress }, "Service deactivated via API");
+    res.json({ success: true, id, active: false });
+  } catch (err) {
+    if (err instanceof ContractError) {
+      if (err.code === "SERVICE_NOT_FOUND") {
+        return res.status(404).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "PROVIDER_MISMATCH") {
+        return res.status(403).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "ALREADY_INACTIVE") {
+        return res.status(409).json({ error: err.message, code: err.code });
+      }
+      if (err.code === "TRANSACTION_TIMEOUT") {
+        return res.status(504).json({ error: err.message, code: err.code });
+      }
+      return res.status(400).json({ error: err.message, code: err.code });
+    }
+    logger.error({ err, id }, "POST /api/services/:id/deactivate failed");
+    res.status(500).json({
+      error: "Failed to deactivate service",
+      code: "DEACTIVATE_ERROR",
+    });
   }
 });
 

@@ -486,6 +486,50 @@ export async function registerServiceOnChain(
   }
 }
 
+/**
+ * Deactivate a service on-chain.
+ * The caller must be the service's provider — the contract enforces
+ * `provider.require_auth()` and `provider == entry.provider`.
+ *
+ * @param {number} id - The numeric service ID to deactivate
+ * @param {string} providerAddress - Stellar address of the provider who owns the service
+ * @returns {Promise<boolean>} true on success
+ * @throws {ContractError} if the service is not found or provider doesn't match
+ */
+export async function deactivateServiceOnChain(id, providerAddress) {
+  try {
+    const service = await getService(id);
+    if (!service) {
+      throw new ContractError(`Service ${id} not found`, 'SERVICE_NOT_FOUND');
+    }
+    if (service.provider !== providerAddress) {
+      throw new ContractError(
+        'Only the provider that registered this service can deactivate it',
+        'PROVIDER_MISMATCH'
+      );
+    }
+    if (!service.active) {
+      throw new ContractError(`Service ${id} is already deactivated`, 'ALREADY_INACTIVE');
+    }
+
+    const contract = getContract();
+    const provider = Address.fromString(providerAddress);
+
+    const op = contract.call(
+      'deactivate_service',
+      nativeToScVal(provider, { type: 'address' }),
+      nativeToScVal(BigInt(id), { type: 'u64' })
+    );
+
+    await simulateAndSubmit(op);
+    logger.info({ id, providerAddress }, 'Service deactivated on-chain');
+    return true;
+  } catch (err) {
+    logger.error({ err, id, providerAddress }, 'deactivateServiceOnChain failed');
+    throw err;
+  }
+}
+
 export async function buildUnsignedRegistryTx(action, providerAddress, params = {}) {
   const contract = getContract();
   const provider = Address.fromString(providerAddress);
