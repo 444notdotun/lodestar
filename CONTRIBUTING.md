@@ -34,12 +34,12 @@ cd contract/agents && stellar contract build
 
 ## CI
 
-All of the above run automatically on every PR and push to `main` via GitHub Actions (`.github/workflows/ci.yml`). PRs cannot be merged unless all CI jobs pass.
+All of the above run automatically on every PR and push to `main` via GitHub Actions (`.github/workflows/ci.yml`). Branch protection requiring all jobs to pass before merge is a planned follow-up.
 
 ## Code style
 
-- Rust: `cargo fmt` before committing (`cargo fmt --check` runs in CI)
-- JS/TS: follow the existing ESLint and TypeScript configuration in each package
+- Rust: run `cargo fmt` before committing; `cargo fmt --all --check` runs in CI under the `contract-build` job
+- JS/TS: follow the existing ESLint and TypeScript configuration in each package (JS lint CI steps are a planned follow-up)
 
 ## Submitting a pull request
 
